@@ -33,32 +33,26 @@ const BOUNDARY_CONTEXTS = [
   "Where do you feel comfortable being touched when you are feeling sad or distressed?"
 ];
 
-// Game State variables
+// Local Client State
 let myUsername = "";
 let peerUsername = "";
 let roomCode = "";
 let role = null; // 'host' or 'peer'
-let activeColor = "red"; // default selected paint color
-let joinRequestInterval = null; // interval for connection handshake pings
+let activeColor = "red"; // active painting color
+let activeView = "menu"; // tracks currently displayed view
 
-// Minigame A (Coloring) State
+// Game specific indices (cached locally to detect changes)
 let gameAPageIndex = 0;
-let gameAPaints = {}; // local coloring config
-let gameAPeerPaints = {}; // peer coloring config
-let gameASubmitted = false;
-let gameAPeerSubmitted = false;
-
-// Minigame B (Ask & Reveal) State
 let gameBQuestionIndex = 0;
-let gameBSubmitted = false;
-let gameBPeerSubmitted = false;
-let gameBAnswer = "";
-let gameBPeerAnswer = "";
 
-// Initialize BroadcastChannel
-const channel = new BroadcastChannel("friends_games_sync");
+// Local coloring paints
+let gameAPaints = {};
+let gameASubmitted = false;
 
-// Register DOM Elements
+// Polling interval reference
+let pollInterval = null;
+
+// Register Views
 const views = {
   menu: document.getElementById("view-menu"),
   lobby: document.getElementById("view-lobby"),
@@ -67,7 +61,7 @@ const views = {
   gameB: document.getElementById("view-game-b")
 };
 
-// Toast Notifications Helper
+// Toast message helper
 function showToast(message, duration = 3500) {
   const container = document.getElementById("toast-container");
   const toast = document.createElement("div");
@@ -82,8 +76,9 @@ function showToast(message, duration = 3500) {
   }, duration);
 }
 
-// Router: switch active view
+// Router: switch visual cards
 function showView(viewId) {
+  activeView = viewId;
   Object.keys(views).forEach(key => {
     if (key === viewId) {
       views[key].classList.add("active");
@@ -93,68 +88,31 @@ function showView(viewId) {
   });
 }
 
-// Generate a random 5-digit room code
-function generateRoomCode() {
-  const chars = "ABCDEFGHJKLMNOPQRSTUVWXYZ23456789"; // Removed ambiguous letters/numbers
-  let code = "";
-  for (let i = 0; i < 5; i++) {
-    code += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return code;
+// Start polling for real-time synchronization status
+function startPolling() {
+  if (pollInterval) clearInterval(pollInterval);
+  // Poll database every 800ms
+  pollInterval = setInterval(pollRoomStatus, 800);
 }
 
-// Broadcast wrapper
-function broadcast(message) {
-  channel.postMessage({
-    roomCode: roomCode,
-    sender: myUsername,
-    ...message
-  });
-}
-
-// Handle Room joining logic
-function setupRoom(roleType, code, myName) {
-  role = roleType;
-  roomCode = code.toUpperCase();
-  myUsername = myName;
-  
-  if (role === "host") {
-    document.getElementById("lobby-code").innerText = roomCode;
-    document.getElementById("lobby-host-name").innerText = myUsername;
-    document.getElementById("lobby-status").innerText = "Waiting for Player 2 to join...";
-    document.getElementById("lobby-status").className = "status-indicator status-waiting";
-    showView("lobby");
-    showToast("Lobby created! Share the code with Player 2.");
-  } else {
-    // Peer does not show lobby, it connects directly after request gets approved
-    broadcast({ type: "JOIN_REQUEST", peerName: myUsername });
-    showToast("Connecting to room " + roomCode + "...");
-    
-    // Set up connection handshake pings in case host loaded slow or is currently rendering
-    if (joinRequestInterval) clearInterval(joinRequestInterval);
-    joinRequestInterval = setInterval(() => {
-      if (peerUsername) {
-        clearInterval(joinRequestInterval);
-        joinRequestInterval = null;
-      } else {
-        broadcast({ type: "JOIN_REQUEST", peerName: myUsername });
-      }
-    }, 1200);
+// Stop polling status
+function stopPolling() {
+  if (pollInterval) {
+    clearInterval(pollInterval);
+    pollInterval = null;
   }
 }
 
-// Reset entire game connection
+// Reset client variables back to Main Menu
 function resetToMenu(toastMessage) {
-  if (joinRequestInterval) {
-    clearInterval(joinRequestInterval);
-    joinRequestInterval = null;
-  }
+  stopPolling();
   myUsername = "";
   peerUsername = "";
   roomCode = "";
   role = null;
+  gameASubmitted = false;
+  gameAPaints = {};
   
-  // reset view inputs
   document.getElementById("input-roomcode").value = "";
   showView("menu");
   
@@ -164,201 +122,215 @@ function resetToMenu(toastMessage) {
 }
 
 // ----------------------------------------------------
-// BroadcastChannel Incoming Message Routing
+// DATABASE SYNC: POLLING LOOPS
 // ----------------------------------------------------
-channel.onmessage = (event) => {
-  const data = event.data;
+async function pollRoomStatus() {
+  if (!roomCode) return;
   
-  // Ignore messages not matching our room code (unless it's a join request searching for host)
-  if (data.roomCode !== roomCode && data.type !== "JOIN_REQUEST") {
-    return;
-  }
-  
-  switch (data.type) {
+  try {
+    const response = await fetch(`/api/room/status/${roomCode}`);
+    if (response.status === 404) {
+      resetToMenu("The host has closed the room.");
+      return;
+    }
+    if (!response.ok) return;
+
+    const data = await response.json();
     
-    case "JOIN_REQUEST":
-      // If we are host, waiting in lobby, and code matches, accept peer
-      if (role === "host" && roomCode === data.roomCode && !peerUsername) {
-        peerUsername = data.peerName;
-        showToast(peerUsername + " joined the lobby!");
-        
-        // Broadcast acknowledgement to let peer know they are connected
-        broadcast({
-          type: "JOIN_ACK",
-          hostName: myUsername,
-          peerName: peerUsername
-        });
-        
-        transitionToHub();
-      }
-      break;
-      
-    case "JOIN_ACK":
-      // If we are peer waiting for connection and code matches our request
-      if (role === "peer" && data.peerName === myUsername && !peerUsername) {
-        peerUsername = data.hostName;
-        showToast("Connected to host: " + peerUsername);
-        transitionToHub();
-      }
-      break;
-      
-    case "GAME_SELECT":
-      // Both load selected game
-      loadGame(data.gameId, false); // false means we don't re-broadcast
-      break;
-      
-    case "GAME_A_SUBMIT":
-      // Peer submitted boundaries paints
-      if (data.sender === peerUsername) {
-        gameAPeerPaints = data.paints;
-        gameAPeerSubmitted = true;
-        updateGameAStatus();
-        checkGameAReveal();
-      }
-      break;
-      
-    case "GAME_B_SUBMIT":
-      // Peer submitted icebreaker response
-      if (data.sender === peerUsername) {
-        gameBPeerAnswer = data.answer;
-        gameBPeerSubmitted = true;
-        updateGameBStatus();
-        checkGameBReveal();
-      }
-      break;
-      
-    case "NEXT_QUESTION":
-      // Sync prompt page or question index
-      gameBQuestionIndex = data.questionIndex;
-      resetGameBFields();
-      break;
-      
-    case "PAGINATION_CHANGE":
-      // Sync pagination in boundaries coloring game
-      gameAPageIndex = data.pageIndex;
-      resetGameAFields();
-      break;
-      
-    case "RESET_TO_HUB":
-      transitionToHub(false);
-      break;
-      
-    case "DISCONNECT":
-      resetToMenu("Connection closed: Peer left the game.");
-      break;
-  }
-};
+    // Resolve Peer Username dynamically based on who is who
+    if (myUsername === data.player1) {
+      peerUsername = data.player2 || "";
+      role = "host";
+    } else {
+      peerUsername = data.player1 || "";
+      role = "peer";
+    }
 
-// Send DISCONNECT when closing tab or window
-window.onbeforeunload = () => {
-  if (roomCode) {
-    broadcast({ type: "DISCONNECT" });
+    // Lobby Waiting state sync
+    if (data.status === "waiting" && activeView !== "lobby") {
+      showView("lobby");
+    } else if (data.status === "active" && activeView === "lobby") {
+      showToast(`${peerUsername} has connected! Entering game choice hub.`);
+      transitionToHub(data);
+    }
+    
+    // Game transition state sync
+    if (data.status === "active") {
+      if (data.activeGame === "hub" && activeView !== "hub") {
+        transitionToHub(data);
+      } else if (data.activeGame === "game-a") {
+        syncGameAState(data);
+      } else if (data.activeGame === "game-b") {
+        syncGameBState(data);
+      }
+    }
+    
+  } catch (err) {
+    console.error("Polling error:", err);
   }
-};
+}
 
-// ----------------------------------------------------
-// Transition: Game Choice Hub
-// ----------------------------------------------------
-function transitionToHub(shouldBroadcast = true) {
-  if (joinRequestInterval) {
-    clearInterval(joinRequestInterval);
-    joinRequestInterval = null;
-  }
-  
-  if (shouldBroadcast) {
-    broadcast({ type: "RESET_TO_HUB" });
-  }
-  
-  // Set players matchup headers
-  document.getElementById("hub-player-1").innerText = role === "host" ? myUsername + " (P1)" : peerUsername + " (P1)";
-  document.getElementById("hub-player-2").innerText = role === "peer" ? myUsername + " (P2)" : peerUsername + " (P2)";
-  
+// Transition view: Hub
+function transitionToHub(data) {
+  document.getElementById("hub-player-1").innerText = data.player1 ? `${data.player1} (P1)` : "Player 1";
+  document.getElementById("hub-player-2").innerText = data.player2 ? `${data.player2} (P2)` : "Player 2";
   showView("hub");
 }
 
 // ----------------------------------------------------
-// Load and Reset Minigames
+// SYNC MINIGAME A: COLORING MAPS
 // ----------------------------------------------------
-function loadGame(gameId, shouldBroadcast = true) {
-  if (shouldBroadcast) {
-    broadcast({ type: "GAME_SELECT", gameId });
-  }
-  
-  if (gameId === "game-a") {
-    gameAPageIndex = 0;
-    resetGameAFields();
+function syncGameAState(data) {
+  const p1Submitted = data.gameASubmissions.p1;
+  const p2Submitted = data.gameASubmissions.p2;
+  const iSubmitted = role === "host" ? p1Submitted : p2Submitted;
+  const peerSubmitted = role === "host" ? p2Submitted : p1Submitted;
+
+  // 1. If active context changes on server, clear and load the new page
+  if (data.gameAContext !== gameAPageIndex || activeView !== "gameA") {
+    gameAPageIndex = data.gameAContext;
+    gameASubmitted = false;
+    gameAPaints = {};
+    
+    // Reset inputs
+    document.getElementById("game-a-prompt").innerText = BOUNDARY_CONTEXTS[gameAPageIndex];
+    document.getElementById("game-a-page-num").innerText = gameAPageIndex + 1;
+    
+    // Clear interactive drawing model
+    document.querySelectorAll("#interactive-mannequin .body-region").forEach(el => {
+      el.removeAttribute("data-color");
+    });
+    
+    document.getElementById("game-a-play-stage").style.display = "grid";
+    document.getElementById("game-a-reveal-stage").style.display = "none";
+    
+    // Enable submit buttons
+    const submitBtn = document.getElementById("btn-game-a-submit");
+    submitBtn.disabled = false;
+    submitBtn.innerText = "Submit Configuration";
+    submitBtn.classList.remove("btn-disabled");
+    
     showView("gameA");
-  } else if (gameId === "game-b") {
-    // If Host, pick a random starting question index
-    if (role === "host") {
-      gameBQuestionIndex = Math.floor(Math.random() * ICEBREAKER_QUESTIONS.length);
-      broadcast({ type: "NEXT_QUESTION", questionIndex: gameBQuestionIndex });
-    }
-    resetGameBFields();
-    showView("gameB");
+  }
+
+  // 2. Update local state caches
+  gameASubmitted = iSubmitted;
+
+  // 3. Update active submit button
+  const submitBtn = document.getElementById("btn-game-a-submit");
+  if (gameASubmitted) {
+    submitBtn.disabled = true;
+    submitBtn.innerText = "Waiting for Player...";
+    submitBtn.classList.add("btn-disabled");
+  }
+
+  // 4. Update status indicator
+  const statusEl = document.getElementById("game-a-status");
+  if (p1Submitted && p2Submitted) {
+    statusEl.innerText = "Revealed!";
+    statusEl.className = "status-indicator status-ready";
+  } else if (p1Submitted || p2Submitted) {
+    statusEl.innerText = "1/2 Submitted";
+    statusEl.className = "status-indicator status-waiting";
+  } else {
+    statusEl.innerText = "Secret Stage";
+    statusEl.className = "status-indicator status-waiting";
+  }
+
+  // 5. If both submitted, reveal side-by-side models
+  if (p1Submitted && p2Submitted) {
+    document.getElementById("game-a-reveal-name-1").innerText = `${data.player1} (P1)`;
+    document.getElementById("game-a-reveal-name-2").innerText = `${data.player2} (P2)`;
+    
+    applyMapColors("reveal-mannequin-1", data.gameASubmissions.p1Paints);
+    applyMapColors("reveal-mannequin-2", data.gameASubmissions.p2Paints);
+    
+    document.getElementById("game-a-play-stage").style.display = "none";
+    document.getElementById("game-a-reveal-stage").style.display = "block";
   }
 }
 
-// Reset Coloring game state & UI
-function resetGameAFields() {
-  gameAPaints = {};
-  gameAPeerPaints = {};
-  gameASubmitted = false;
-  gameAPeerSubmitted = false;
-  
-  // Update prompt
-  document.getElementById("game-a-prompt").innerText = BOUNDARY_CONTEXTS[gameAPageIndex];
-  document.getElementById("game-a-page-num").innerText = gameAPageIndex + 1;
-  
-  // Reset SVGs coloring
-  document.querySelectorAll(".body-region").forEach(el => {
+// Paint static SVG paths using retrieved coloring maps
+function applyMapColors(svgId, paintsObj) {
+  document.querySelectorAll(`#${svgId} .body-region`).forEach(el => {
     el.removeAttribute("data-color");
   });
-  
-  // Show play views and hide reveal views
-  document.getElementById("game-a-play-stage").style.display = "grid";
-  document.getElementById("game-a-reveal-stage").style.display = "none";
-  
-  // Enable submit buttons
-  const submitBtn = document.getElementById("btn-game-a-submit");
-  submitBtn.disabled = false;
-  submitBtn.innerText = "Submit Configuration";
-  submitBtn.classList.remove("btn-disabled");
-  
-  updateGameAStatus();
+  Object.keys(paintsObj || {}).forEach(region => {
+    const color = paintsObj[region];
+    const elements = document.querySelectorAll(`#${svgId} [data-region="${region}"]`);
+    elements.forEach(el => el.setAttribute("data-color", color));
+  });
 }
 
-// Reset Icebreaker game state & UI
-function resetGameBFields() {
-  gameBAnswer = "";
-  gameBPeerAnswer = "";
-  gameBSubmitted = false;
-  gameBPeerSubmitted = false;
-  
-  // Clear textarea
-  document.getElementById("input-game-b-answer").value = "";
-  
-  // Update question prompt
-  document.getElementById("game-b-question-text").innerText = ICEBREAKER_QUESTIONS[gameBQuestionIndex];
-  
-  // Show play views and hide reveal views
-  document.getElementById("game-b-play-stage").style.display = "block";
-  document.getElementById("game-b-reveal-stage").style.display = "none";
-  
-  // Enable submit
+// ----------------------------------------------------
+// SYNC MINIGAME B: ASK & REVEAL DEEP DIVE
+// ----------------------------------------------------
+function syncGameBState(data) {
+  const p1Submitted = data.gameBSubmissions.p1;
+  const p2Submitted = data.gameBSubmissions.p2;
+  const iSubmitted = role === "host" ? p1Submitted : p2Submitted;
+  const peerSubmitted = role === "host" ? p2Submitted : p1Submitted;
+
+  // 1. If active question index changes, clear inputs and show the new prompt
+  if (data.gameBQuestion !== gameBQuestionIndex || activeView !== "gameB") {
+    gameBQuestionIndex = data.gameBQuestion;
+    
+    // Clear textbox
+    document.getElementById("input-game-b-answer").value = "";
+    document.getElementById("game-b-question-text").innerText = ICEBREAKER_QUESTIONS[gameBQuestionIndex];
+    
+    // Reset display stages
+    document.getElementById("game-b-play-stage").style.display = "block";
+    document.getElementById("game-b-reveal-stage").style.display = "none";
+    
+    // Enable submit button
+    const submitBtn = document.getElementById("btn-game-b-submit");
+    submitBtn.disabled = false;
+    submitBtn.innerText = "Submit Secret Answer";
+    submitBtn.classList.remove("btn-disabled");
+    
+    showView("gameB");
+  }
+
+  // 2. Update active submit button
   const submitBtn = document.getElementById("btn-game-b-submit");
-  submitBtn.disabled = false;
-  submitBtn.innerText = "Submit Secret Answer";
-  submitBtn.classList.remove("btn-disabled");
-  
-  updateGameBStatus();
+  if (iSubmitted) {
+    submitBtn.disabled = true;
+    submitBtn.innerText = "Answer Submitted!";
+    submitBtn.classList.add("btn-disabled");
+  }
+
+  // 3. Update status indicator
+  const statusEl = document.getElementById("game-b-status");
+  if (p1Submitted && p2Submitted) {
+    statusEl.innerText = "Revealed!";
+    statusEl.className = "status-indicator status-ready";
+  } else if (p1Submitted || p2Submitted) {
+    statusEl.innerText = "1/2 Submitted";
+    statusEl.className = "status-indicator status-waiting";
+  } else {
+    statusEl.innerText = "Answering Stage";
+    statusEl.className = "status-indicator status-waiting";
+  }
+
+  // 4. If both submitted, reveal answers side-by-side
+  if (p1Submitted && p2Submitted) {
+    document.getElementById("game-b-reveal-name-1").innerText = `${data.player1} (P1)`;
+    document.getElementById("game-b-reveal-name-2").innerText = `${data.player2} (P2)`;
+    
+    document.getElementById("game-b-reveal-text-1").innerText = data.gameBSubmissions.p1Answer;
+    document.getElementById("game-b-reveal-text-2").innerText = data.gameBSubmissions.p2Answer;
+    
+    document.getElementById("game-b-play-stage").style.display = "none";
+    document.getElementById("game-b-reveal-stage").style.display = "block";
+  }
 }
 
 // ----------------------------------------------------
-// MINIGAME A: COLORING GAME LOGIC
+// INTERACTIVE LOCAL ACTIONS (POSTING TO EXPRESS API)
 // ----------------------------------------------------
 
-// Handle local color palette selection
+// Select color in Palette
 document.querySelectorAll(".palette-option").forEach(el => {
   el.addEventListener("click", () => {
     document.querySelectorAll(".palette-option").forEach(item => item.classList.remove("active"));
@@ -367,16 +339,13 @@ document.querySelectorAll(".palette-option").forEach(el => {
   });
 });
 
-// Paint interactive mannequin parts
+// Paint mannequin paths
 document.getElementById("interactive-mannequin").addEventListener("click", (e) => {
-  if (gameASubmitted) return; // block modifications after submitting
+  if (gameASubmitted) return; // block painting after submitting
   
   const region = e.target.getAttribute("data-region");
   if (region) {
-    // Select all paths representing this region (e.g. both arms or both legs)
     const matchingElements = document.querySelectorAll(`#interactive-mannequin [data-region="${region}"]`);
-    
-    // Toggle color if already painted with the same color, otherwise set color
     const currentColor = gameAPaints[region];
     const targetColor = currentColor === activeColor ? null : activeColor;
     
@@ -390,207 +359,106 @@ document.getElementById("interactive-mannequin").addEventListener("click", (e) =
   }
 });
 
-// Submit Coloring config
-document.getElementById("btn-game-a-submit").addEventListener("click", () => {
+// Submit Minigame A (Coloring)
+document.getElementById("btn-game-a-submit").addEventListener("click", async () => {
   if (gameASubmitted) return;
   
-  gameASubmitted = true;
-  
-  // Disable button
-  const submitBtn = document.getElementById("btn-game-a-submit");
-  submitBtn.disabled = true;
-  submitBtn.innerText = "Waiting for Player...";
-  submitBtn.classList.add("btn-disabled");
-  
-  // Broadcast local coloring state
-  broadcast({
-    type: "GAME_A_SUBMIT",
-    paints: gameAPaints
-  });
-  
-  updateGameAStatus();
-  checkGameAReveal();
-});
-
-// Sync status indicators
-function updateGameAStatus() {
-  const statusEl = document.getElementById("game-a-status");
-  if (gameASubmitted && gameAPeerSubmitted) {
-    statusEl.innerText = "Revealed!";
-    statusEl.className = "status-indicator status-ready";
-  } else if (gameASubmitted || gameAPeerSubmitted) {
-    statusEl.innerText = "1/2 Submitted";
-    statusEl.className = "status-indicator status-waiting";
-  } else {
-    statusEl.innerText = "Secret Stage";
-    statusEl.className = "status-indicator status-waiting";
-  }
-}
-
-// Transition to coloring Reveal screen if both submitted
-function checkGameAReveal() {
-  if (gameASubmitted && gameAPeerSubmitted) {
-    showToast("Reveal! Check your comfort zones.");
+  try {
+    const response = await fetch('/api/game/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        roomCode,
+        username: myUsername,
+        gameType: 'game-a',
+        contextId: gameAPageIndex,
+        paints: gameAPaints
+      })
+    });
     
-    // Set labels
-    document.getElementById("game-a-reveal-name-1").innerText = role === "host" ? myUsername + " (P1)" : peerUsername + " (P1)";
-    document.getElementById("game-a-reveal-name-2").innerText = role === "peer" ? myUsername + " (P2)" : peerUsername + " (P2)";
-    
-    // Apply paints to reveal mannequins
-    const mapP1 = role === "host" ? gameAPaints : gameAPeerPaints;
-    const mapP2 = role === "peer" ? gameAPaints : gameAPeerPaints;
-    
-    applyMapColors("reveal-mannequin-1", mapP1);
-    applyMapColors("reveal-mannequin-2", mapP2);
-    
-    // Switch states display
-    document.getElementById("game-a-play-stage").style.display = "none";
-    document.getElementById("game-a-reveal-stage").style.display = "block";
-  }
-}
-
-// Apply colors from state objects to static SVGs
-function applyMapColors(svgId, paintsObj) {
-  // Clear first
-  document.querySelectorAll(`#${svgId} .body-region`).forEach(el => {
-    el.removeAttribute("data-color");
-  });
-  
-  // Apply colors
-  Object.keys(paintsObj).forEach(region => {
-    const color = paintsObj[region];
-    const elements = document.querySelectorAll(`#${svgId} [data-region="${region}"]`);
-    elements.forEach(el => el.setAttribute("data-color", color));
-  });
-}
-
-// Minigame A Pagination Click Handlers
-document.getElementById("btn-game-a-next").addEventListener("click", () => {
-  if (gameAPageIndex < BOUNDARY_CONTEXTS.length - 1) {
-    gameAPageIndex++;
-    broadcast({ type: "PAGINATION_CHANGE", pageIndex: gameAPageIndex });
-    resetGameAFields();
-  } else {
-    showToast("Last context page reached!");
+    if (response.ok) {
+      showToast("Config submitted successfully! Waiting for partner...");
+      pollRoomStatus(); // immediate update
+    } else {
+      showToast("Failed to submit configurations.");
+    }
+  } catch (err) {
+    console.error(err);
   }
 });
 
-document.getElementById("btn-game-a-prev").addEventListener("click", () => {
-  if (gameAPageIndex > 0) {
-    gameAPageIndex--;
-    broadcast({ type: "PAGINATION_CHANGE", pageIndex: gameAPageIndex });
-    resetGameAFields();
-  } else {
-    showToast("First context page reached!");
-  }
-});
-
-
-// ----------------------------------------------------
-// MINIGAME B: ASK & REVEAL DEEP DIVE LOGIC
-// ----------------------------------------------------
-
-// Submit Icebreaker Secret response
-document.getElementById("btn-game-b-submit").addEventListener("click", () => {
-  const answerVal = document.getElementById("input-game-b-answer").value.trim();
-  
-  if (!answerVal) {
+// Submit Minigame B (Ask & Reveal)
+document.getElementById("btn-game-b-submit").addEventListener("click", async () => {
+  const textVal = document.getElementById("input-game-b-answer").value.trim();
+  if (!textVal) {
     showToast("Please enter an answer before submitting!");
     return;
   }
-  
-  gameBAnswer = answerVal;
-  gameBSubmitted = true;
-  
-  // Disable button
-  const submitBtn = document.getElementById("btn-game-b-submit");
-  submitBtn.disabled = true;
-  submitBtn.innerText = "Answer Submitted!";
-  submitBtn.classList.add("btn-disabled");
-  
-  broadcast({
-    type: "GAME_B_SUBMIT",
-    answer: gameBAnswer
-  });
-  
-  updateGameBStatus();
-  checkGameBReveal();
+
+  try {
+    const response = await fetch('/api/game/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        roomCode,
+        username: myUsername,
+        gameType: 'game-b',
+        questionId: gameBQuestionIndex,
+        answer: textVal
+      })
+    });
+
+    if (response.ok) {
+      showToast("Answer submitted! Waiting for partner...");
+      pollRoomStatus();
+    } else {
+      showToast("Failed to submit response.");
+    }
+  } catch (err) {
+    console.error(err);
+  }
 });
 
-// Update Status indicators
-function updateGameBStatus() {
-  const statusEl = document.getElementById("game-b-status");
-  if (gameBSubmitted && gameBPeerSubmitted) {
-    statusEl.innerText = "Revealed!";
-    statusEl.className = "status-indicator status-ready";
-  } else if (gameBSubmitted || gameBPeerSubmitted) {
-    statusEl.innerText = "1/2 Submitted";
-    statusEl.className = "status-indicator status-waiting";
-  } else {
-    statusEl.innerText = "Answering Stage";
-    statusEl.className = "status-indicator status-waiting";
-  }
-}
-
-// Reveal answers
-function checkGameBReveal() {
-  if (gameBSubmitted && gameBPeerSubmitted) {
-    showToast("Revealed! Read the responses.");
-    
-    // Set labels
-    document.getElementById("game-b-reveal-name-1").innerText = role === "host" ? myUsername + " (P1)" : peerUsername + " (P1)";
-    document.getElementById("game-b-reveal-name-2").innerText = role === "peer" ? myUsername + " (P2)" : peerUsername + " (P2)";
-    
-    // Apply texts
-    const answerP1 = role === "host" ? gameBAnswer : gameBPeerAnswer;
-    const answerP2 = role === "peer" ? gameBAnswer : gameBPeerAnswer;
-    
-    document.getElementById("game-b-reveal-text-1").innerText = answerP1;
-    document.getElementById("game-b-reveal-text-2").innerText = answerP2;
-    
-    // Transition UI views
-    document.getElementById("game-b-play-stage").style.display = "none";
-    document.getElementById("game-b-reveal-stage").style.display = "block";
-  }
-}
-
-// Draw next Question
-document.getElementById("btn-game-b-next").addEventListener("click", () => {
-  // Let anyone draw next, simple and fun
-  let nextIdx = Math.floor(Math.random() * ICEBREAKER_QUESTIONS.length);
-  // Avoid picking the exact same question consecutively
-  while (nextIdx === gameBQuestionIndex && ICEBREAKER_QUESTIONS.length > 1) {
-    nextIdx = Math.floor(Math.random() * ICEBREAKER_QUESTIONS.length);
-  }
-  
-  gameBQuestionIndex = nextIdx;
-  broadcast({ type: "NEXT_QUESTION", questionIndex: gameBQuestionIndex });
-  resetGameBFields();
-});
-
-
-// ----------------------------------------------------
-// UI INTERACTIVE CLICK HANDLERS (GENERAL)
-// ----------------------------------------------------
-
-// "Create Server" Menu Button
-document.getElementById("btn-create-server").addEventListener("click", () => {
-  const usernameVal = document.getElementById("input-username").value.trim();
-  if (!usernameVal) {
+// Create Server Button
+document.getElementById("btn-create-server").addEventListener("click", async () => {
+  const nameVal = document.getElementById("input-username").value.trim();
+  if (!nameVal) {
     showToast("Please enter a username first!");
     return;
   }
-  
-  const roomCodeGenerated = generateRoomCode();
-  setupRoom("host", roomCodeGenerated, usernameVal);
+
+  try {
+    const response = await fetch('/api/room/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: nameVal })
+    });
+    
+    if (response.ok) {
+      const data = await response.json();
+      myUsername = nameVal;
+      roomCode = data.roomCode;
+      role = "host";
+      
+      document.getElementById("lobby-code").innerText = roomCode;
+      document.getElementById("lobby-host-name").innerText = myUsername;
+      
+      showView("lobby");
+      startPolling();
+    } else {
+      showToast("Failed to create room.");
+    }
+  } catch (err) {
+    console.error(err);
+  }
 });
 
-// "Join Server" Menu Button
-document.getElementById("btn-join-server").addEventListener("click", () => {
-  const usernameVal = document.getElementById("input-username").value.trim();
+// Join Server Button
+document.getElementById("btn-join-server").addEventListener("click", async () => {
+  const nameVal = document.getElementById("input-username").value.trim();
   const codeVal = document.getElementById("input-roomcode").value.trim().toUpperCase();
-  
-  if (!usernameVal) {
+
+  if (!nameVal) {
     showToast("Please enter a username first!");
     return;
   }
@@ -598,22 +466,117 @@ document.getElementById("btn-join-server").addEventListener("click", () => {
     showToast("Please enter a valid 5-digit room code!");
     return;
   }
-  
-  setupRoom("peer", codeVal, usernameVal);
+
+  try {
+    const response = await fetch('/api/room/join', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: nameVal, roomCode: codeVal })
+    });
+    
+    if (response.ok) {
+      myUsername = nameVal;
+      roomCode = codeVal;
+      role = "peer";
+      
+      showToast("Successfully joined room! Waiting for state sync...");
+      startPolling();
+    } else {
+      const data = await response.json();
+      showToast(data.error || "Failed to join room.");
+    }
+  } catch (err) {
+    console.error(err);
+  }
 });
 
-// Join card triggers
-document.getElementById("card-game-a").addEventListener("click", () => {
-  loadGame("game-a");
+// Select Game Cards in Hub
+document.getElementById("card-game-a").addEventListener("click", async () => {
+  try {
+    await fetch('/api/game/select', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ roomCode, gameId: 'game-a' })
+    });
+    pollRoomStatus();
+  } catch (err) {
+    console.error(err);
+  }
 });
 
-document.getElementById("card-game-b").addEventListener("click", () => {
-  loadGame("game-b");
+document.getElementById("card-game-b").addEventListener("click", async () => {
+  try {
+    await fetch('/api/game/select', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ roomCode, gameId: 'game-b' })
+    });
+    pollRoomStatus();
+  } catch (err) {
+    console.error(err);
+  }
 });
 
-// Exit back to game choice hub from inside a game
+// Back buttons in Minigames
 document.querySelectorAll(".btn-to-hub").forEach(btn => {
-  btn.addEventListener("click", () => {
-    transitionToHub();
+  btn.addEventListener("click", async () => {
+    try {
+      await fetch('/api/game/exit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ roomCode })
+      });
+      pollRoomStatus();
+    } catch (err) {
+      console.error(err);
+    }
   });
 });
+
+// Pagination Coloring Game
+document.getElementById("btn-game-a-next").addEventListener("click", async () => {
+  try {
+    await fetch('/api/game/next', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ roomCode, gameType: 'game-a' })
+    });
+    pollRoomStatus();
+  } catch (err) {
+    console.error(err);
+  }
+});
+
+document.getElementById("btn-game-a-prev").addEventListener("click", async () => {
+  try {
+    await fetch('/api/game/prev', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ roomCode })
+    });
+    pollRoomStatus();
+  } catch (err) {
+    console.error(err);
+  }
+});
+
+// Draw next Question in Ask & Reveal
+document.getElementById("btn-game-b-next").addEventListener("click", async () => {
+  try {
+    await fetch('/api/game/next', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ roomCode, gameType: 'game-b' })
+    });
+    pollRoomStatus();
+  } catch (err) {
+    console.error(err);
+  }
+});
+
+// Graceful exit on closing window/unloading
+window.onbeforeunload = () => {
+  if (roomCode && myUsername) {
+    navigator.sendBeacon('/api/room/leave', JSON.stringify({ roomCode, username: myUsername }));
+  }
+};

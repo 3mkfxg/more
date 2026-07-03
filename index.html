@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Friends Games - Synced Multi-Player Party Hub</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- App Wrapper -->
+  <div class="app-container">
+
+    <!-- Toast Notification Container (for real-time feedback) -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <!-- VIEW 1: MAIN MENU -->
+    <div id="view-menu" class="view active">
+      <div class="card fade-in">
+        <h1>Friends Games</h1>
+        <p>A synchronized real-time two-player party hub. Open this page in two side-by-side tabs to play!</p>
+        
+        <div class="form-group">
+          <label for="input-username">Your Username</label>
+          <input type="text" id="input-username" class="form-input" placeholder="e.g. Alice" maxlength="15">
+        </div>
+
+        <div class="form-group">
+          <label for="input-roomcode">Room Code (Required to Join)</label>
+          <input type="text" id="input-roomcode" class="form-input" style="text-transform: uppercase;" placeholder="e.g. X7K9P" maxlength="5">
+        </div>
+
+        <div class="btn-group">
+          <button id="btn-create-server" class="btn btn-primary">Create Room</button>
+          <button id="btn-join-server" class="btn btn-secondary">Join Room</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- VIEW 2: WAITING LOBBY -->
+    <div id="view-lobby" class="view">
+      <div class="card fade-in">
+        <h2>Waiting Lobby</h2>
+        <p>Share this 5-digit room code with Player 2. Once they join, the game will automatically start!</p>
+        
+        <div id="lobby-code" class="room-code-display">-----</div>
+        
+        <div id="lobby-status" class="status-indicator status-waiting">
+          Waiting for Player 2 to join...
+        </div>
+        
+        <div style="margin-top: 1rem; font-weight: 500;">
+          Host: <span id="lobby-host-name" style="color: var(--color-secondary);">---</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- VIEW 3: GAME CHOICE HUB -->
+    <div id="view-hub" class="view">
+      <div class="card fade-in">
+        <h2>Select a Game</h2>
+        
+        <div class="players-matching">
+          <span id="hub-player-1" class="player-tag">Player 1</span>
+          <span class="vs-badge">VS</span>
+          <span id="hub-player-2" class="player-tag">Player 2</span>
+        </div>
+
+        <p>Choose one of the party games below to play together in real-time:</p>
+
+        <div class="game-options-grid">
+          <!-- Game A Card -->
+          <div id="card-game-a" class="game-card">
+            <div>
+              <div class="game-card-icon">🎨</div>
+              <h3>Boundaries Map</h3>
+              <p style="font-size: 0.9rem; margin-bottom: 0;">Secretly color sections of your body to show comfort zones, then compare results.</p>
+            </div>
+            <button class="btn btn-primary" style="margin-top: 1.5rem; padding: 0.7rem 1rem;">Play</button>
+          </div>
+
+          <!-- Game B Card -->
+          <div id="card-game-b" class="game-card">
+            <div>
+              <div class="game-card-icon">💬</div>
+              <h3>Ask & Reveal</h3>
+              <p style="font-size: 0.9rem; margin-bottom: 0;">Answer deep icebreaker questions secretly, then reveal and discuss together.</p>
+            </div>
+            <button class="btn btn-secondary" style="margin-top: 1.5rem; padding: 0.7rem 1rem;">Play</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- VIEW 4: MINIGAME A (BOUNDARIES COLORING) -->
+    <div id="view-game-a" class="view">
+      <div class="card fade-in">
+        
+        <div class="game-header">
+          <button class="btn btn-outline btn-back btn-to-hub">← Exit Game</button>
+          <div id="game-a-status" class="status-indicator status-waiting">Secret Stage</div>
+        </div>
+
+        <h2 id="game-a-prompt" style="color: var(--color-tertiary); font-size: 1.4rem; min-height: 3.5rem;">
+          Where do you feel comfortable being touched by someone you don't know?
+        </h2>
+
+        <!-- Play Stage: Select and Paint -->
+        <div id="game-a-play-stage" class="boundaries-container">
+          
+          <div class="left-panel">
+            <div class="palette-container">
+              <h3 style="font-size: 1.1rem; text-align: left; margin-bottom: 0.5rem;">Select Color:</h3>
+              
+              <!-- Red Option -->
+              <div class="palette-option active" data-color="red">
+                <div class="color-dot red"></div>
+                <div>
+                  <span class="palette-label">Uncomfortable</span>
+                  <span class="palette-desc">No / Red</span>
+                </div>
+              </div>
+
+              <!-- Yellow-Green Option -->
+              <div class="palette-option" data-color="yellow">
+                <div class="color-dot yellow"></div>
+                <div>
+                  <span class="palette-label">Depends</span>
+                  <span class="palette-desc">Just Ask / Lime</span>
+                </div>
+              </div>
+
+              <!-- Blue Option -->
+              <div class="palette-option" data-color="blue">
+                <div class="color-dot blue"></div>
+                <div>
+                  <span class="palette-label">Comfortable</span>
+                  <span class="palette-desc">OK / Sky Blue</span>
+                </div>
+              </div>
+            </div>
+
+            <p style="font-size: 0.9rem; text-align: left;">Click a color option, then click regions on the mannequin body model to paint them.</p>
+            <button id="btn-game-a-submit" class="btn btn-secondary">Submit Configuration</button>
+          </div>
+
+          <div class="svg-wrapper">
+            <!-- Interative body SVG mannequin -->
+            <svg viewBox="0 0 200 400" class="mannequin-svg" id="interactive-mannequin">
+              <!-- Head -->
+              <ellipse cx="100" cy="50" rx="25" ry="30" class="body-region" data-region="head" />
+              <!-- Shoulders -->
+              <path d="M 50,110 C 65,95 80,95 100,95 C 120,95 135,95 150,110 L 140,125 L 60,125 Z" class="body-region" data-region="shoulders" />
+              <!-- Chest/Torso -->
+              <path d="M 60,125 L 140,125 L 130,220 L 70,220 Z" class="body-region" data-region="torso" />
+              <!-- Left Arm -->
+              <path d="M 50,110 L 35,210 L 50,210 L 60,125 Z" class="body-region" data-region="arms" />
+              <!-- Right Arm -->
+              <path d="M 150,110 L 165,210 L 150,210 L 140,125 Z" class="body-region" data-region="arms" />
+              <!-- Left Hand -->
+              <circle cx="35" cy="225" r="12" class="body-region" data-region="hands" />
+              <!-- Right Hand -->
+              <circle cx="165" cy="225" r="12" class="body-region" data-region="hands" />
+              <!-- Left Leg -->
+              <path d="M 70,220 L 80,340 L 98,340 L 98,220 Z" class="body-region" data-region="legs" />
+              <!-- Right Leg -->
+              <path d="M 130,220 L 120,340 L 102,340 L 102,220 Z" class="body-region" data-region="legs" />
+              <!-- Left Foot -->
+              <ellipse cx="80" cy="355" rx="15" ry="10" class="body-region" data-region="feet" />
+              <!-- Right Foot -->
+              <ellipse cx="120" cy="355" rx="15" ry="10" class="body-region" data-region="feet" />
+            </svg>
+          </div>
+
+        </div>
+
+        <!-- Reveal Stage: Side-by-Side SVG Comparison -->
+        <div id="game-a-reveal-stage" style="display: none;">
+          <div class="reveal-flex">
+            <!-- Player 1 map -->
+            <div class="reveal-pane">
+              <h3 id="game-a-reveal-name-1">Player 1</h3>
+              <div class="svg-wrapper">
+                <svg viewBox="0 0 200 400" class="mannequin-svg" id="reveal-mannequin-1">
+                  <ellipse cx="100" cy="50" rx="25" ry="30" class="body-region" data-region="head" />
+                  <path d="M 50,110 C 65,95 80,95 100,95 C 120,95 135,95 150,110 L 140,125 L 60,125 Z" class="body-region" data-region="shoulders" />
+                  <path d="M 60,125 L 140,125 L 130,220 L 70,220 Z" class="body-region" data-region="torso" />
+                  <path d="M 50,110 L 35,210 L 50,210 L 60,125 Z" class="body-region" data-region="arms" />
+                  <path d="M 150,110 L 165,210 L 150,210 L 140,125 Z" class="body-region" data-region="arms" />
+                  <circle cx="35" cy="225" r="12" class="body-region" data-region="hands" />
+                  <circle cx="165" cy="225" r="12" class="body-region" data-region="hands" />
+                  <path d="M 70,220 L 80,340 L 98,340 L 98,220 Z" class="body-region" data-region="legs" />
+                  <path d="M 130,220 L 120,340 L 102,340 L 102,220 Z" class="body-region" data-region="legs" />
+                  <ellipse cx="80" cy="355" rx="15" ry="10" class="body-region" data-region="feet" />
+                  <ellipse cx="120" cy="355" rx="15" ry="10" class="body-region" data-region="feet" />
+                </svg>
+              </div>
+            </div>
+
+            <!-- Player 2 map -->
+            <div class="reveal-pane">
+              <h3 id="game-a-reveal-name-2">Player 2</h3>
+              <div class="svg-wrapper">
+                <svg viewBox="0 0 200 400" class="mannequin-svg" id="reveal-mannequin-2">
+                  <ellipse cx="100" cy="50" rx="25" ry="30" class="body-region" data-region="head" />
+                  <path d="M 50,110 C 65,95 80,95 100,95 C 120,95 135,95 150,110 L 140,125 L 60,125 Z" class="body-region" data-region="shoulders" />
+                  <path d="M 60,125 L 140,125 L 130,220 L 70,220 Z" class="body-region" data-region="torso" />
+                  <path d="M 50,110 L 35,210 L 50,210 L 60,125 Z" class="body-region" data-region="arms" />
+                  <path d="M 150,110 L 165,210 L 150,210 L 140,125 Z" class="body-region" data-region="arms" />
+                  <circle cx="35" cy="225" r="12" class="body-region" data-region="hands" />
+                  <circle cx="165" cy="225" r="12" class="body-region" data-region="hands" />
+                  <path d="M 70,220 L 80,340 L 98,340 L 98,220 Z" class="body-region" data-region="legs" />
+                  <path d="M 130,220 L 120,340 L 102,340 L 102,220 Z" class="body-region" data-region="legs" />
+                  <ellipse cx="80" cy="355" rx="15" ry="10" class="body-region" data-region="feet" />
+                  <ellipse cx="120" cy="355" rx="15" ry="10" class="body-region" data-region="feet" />
+                </svg>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Pagination and Reset controls -->
+        <div class="pagination-controls">
+          <button id="btn-game-a-prev" class="btn btn-outline" style="width: auto; padding: 0.5rem 1rem;">&larr; Previous Context</button>
+          <div class="pagination-text">Context <span id="game-a-page-num">1</span>/5</div>
+          <button id="btn-game-a-next" class="btn btn-outline" style="width: auto; padding: 0.5rem 1rem;">Next Context &rarr;</button>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- VIEW 5: MINIGAME B (ASK & REVEAL DEEP DIVE) -->
+    <div id="view-game-b" class="view">
+      <div class="card fade-in">
+        
+        <div class="game-header">
+          <button class="btn btn-outline btn-back btn-to-hub">← Exit Game</button>
+          <div id="game-b-status" class="status-indicator status-waiting">Answering Stage</div>
+        </div>
+
+        <h2>Ask & Reveal</h2>
+        <p>Answer the question below in secret. Once both players submit, your responses will be shown side-by-side!</p>
+
+        <!-- Dynamic Question Card -->
+        <div class="question-card" id="game-b-question-text">
+          Loading prompt...
+        </div>
+
+        <!-- Submission Controls -->
+        <div id="game-b-play-stage" class="answer-area">
+          <div class="form-group">
+            <label for="input-game-b-answer">Your Secret Answer</label>
+            <textarea id="input-game-b-answer" class="form-input" rows="3" placeholder="Type your answer here..." style="resize: vertical;"></textarea>
+          </div>
+          <button id="btn-game-b-submit" class="btn btn-primary">Submit Secret Answer</button>
+        </div>
+
+        <!-- Reveal Stage: Side-by-Side responses -->
+        <div id="game-b-reveal-stage" style="display: none;">
+          <h3>Revealed Answers!</h3>
+          <div class="reveal-bubbles-container">
+            <!-- Player 1 bubble -->
+            <div class="reveal-bubble">
+              <div id="game-b-reveal-name-1" class="reveal-bubble-name">Player 1</div>
+              <div id="game-b-reveal-text-1" class="reveal-bubble-text">---</div>
+            </div>
+
+            <!-- Player 2 bubble -->
+            <div class="reveal-bubble">
+              <div id="game-b-reveal-name-2" class="reveal-bubble-name">Player 2</div>
+              <div id="game-b-reveal-text-2" class="reveal-bubble-text">---</div>
+            </div>
+          </div>
+
+          <button id="btn-game-b-next" class="btn btn-secondary" style="margin-top: 2rem;">Next Question &rarr;</button>
+        </div>
+
+      </div>
+    </div>
+
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
